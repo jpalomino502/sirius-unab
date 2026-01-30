@@ -1,531 +1,234 @@
-"use client"
+"use client";
 
-import { useEffect, useState } from "react"
-import { supabase } from "@/../app/supabaseClient"
-import { Button } from "@/components/ui/button"
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { Sparkles } from "lucide-react"
-import { useToast } from "@/hooks/use-toast"
-import { PostCard } from "./components/post-card"
-import { StoriesStrip } from "./components/stories-strip"
-import { Composer } from "./components/composer"
-import { PostDetailModal } from "./components/post-detail-modal"
-import { Skeleton } from "@/components/ui/skeleton"
+import React, { useState } from "react";
+import {
+  Image as ImageIcon,
+  FileText,
+  Smile,
+  Calendar,
+  MapPin,
+  MoreHorizontal,
+  MessageCircle,
+  Repeat2,
+  Heart,
+  Share,
+  BarChart3,
+  Globe2
+} from "lucide-react";
+import { useTheme } from "@/context/theme-context";
+import { Button, Textarea, Avatar, Card, CardHeader, CardBody, CardFooter, Image } from "@heroui/react";
 
-// PostCard ahora está modularizado en ./components/post-card
-const formatRelativeTime = (isoDate: string) => {
-  const diffMs = Date.now() - new Date(isoDate).getTime()
-  const diffSec = Math.floor(diffMs / 1000)
-  if (diffSec < 60) return "ahora"
-  const diffMin = Math.floor(diffSec / 60)
-  if (diffMin < 60) return `${diffMin}m`
-  const diffHr = Math.floor(diffMin / 60)
-  if (diffHr < 24) return `${diffHr}h`
-  const diffDay = Math.floor(diffHr / 24)
-  return `${diffDay}d`
-}
-
-// StoriesStrip maneja internamente los stories
+/**
+ * HomeView Component
+ * Replica la interfaz principal de X (Twitter) basada en las imágenes proporcionadas.
+ * Incluye pestañas de navegación superior, área de composición y lista de posts.
+ */
 export default function HomeView() {
-  const [posts, setPosts] = useState<Array<{id: string, author: string, role: string, avatar: string, timestamp: string, content: string, likes: number, comments: number, media?: { url: string; mime_type: string }[]}>>([])
-  const [loading, setLoading] = useState<boolean>(true)
-  const { toast } = useToast()
-  const [likedPostIds, setLikedPostIds] = useState<Set<string>>(new Set())
-  const [openComments, setOpenComments] = useState<Set<string>>(new Set())
-  const [commentTexts, setCommentTexts] = useState<Record<string, string>>({})
-  const [commentsByPostId, setCommentsByPostId] = useState<Record<string, { id: string | number; author: string; avatar: string; timestamp: string; content: string }[]>>({})
-  const [detailOpen, setDetailOpen] = useState<boolean>(false)
-  const [selectedPostId, setSelectedPostId] = useState<string | null>(null)
+  const [activeTab, setActiveTab] = useState("para-ti");
+  const { accentColor, accentBg, accentHover } = useTheme();
 
-  useEffect(() => {
-    const loadPosts = async () => {
-      setLoading(true)
-      const { data: postsData, error } = await supabase
-        .from("posts")
-        .select("id, content, created_at, author_id, likes_count, comments_count")
-        .order("created_at", { ascending: false })
-      if (error) {
-        console.error("Error cargando posts:", error.message)
-        setLoading(false)
-        return
-      }
-      console.log("[HomeView] Posts obtenidos:", { count: (postsData || []).length, sample: (postsData || []).slice(0,3) })
-      const authorIds = Array.from(new Set((postsData || []).map(p => p.author_id)))
-      console.log("[HomeView] Author IDs para perfiles:", authorIds)
-      const profilesById: Record<string, { id: string; full_name?: string | null; career?: string | null; email?: string | null }> = {}
-
-      // 1) Intentar obtener perfiles desde API server-side (service role) para todos los autores
-      if (authorIds.length > 0) {
-        try {
-          const res = await fetch('/api/user-profiles', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids: authorIds })
-          })
-          if (res.ok) {
-            const { profiles } = await res.json()
-            console.log("[HomeView] API perfiles recibidos:", { count: (profiles || []).length, ids: (profiles || []).map((p: { id: string })=>p.id) })
-            for (const p of profiles || []) {
-              profilesById[p.id] = { ...(profilesById[p.id] || {}), ...p }
-            }
-          } else {
-            const txt = await res.text()
-            console.warn("[HomeView] API /api/user-profiles no OK", { status: res.status, body: txt })
-          }
-        } catch (e) {
-          console.error('Error obteniendo perfiles desde API:', e)
-        }
-
-        // 2) Merge adicional con lectura directa desde tabla public.users (cliente) para mejorar datos (full_name/career)
-        try {
-          const { data: profiles, error: profileErr } = await supabase
-            .from("users")
-            .select("id, full_name, career, email")
-            .in("id", authorIds)
-          if (profileErr) {
-            console.error("Error cargando perfiles:", profileErr.message)
-          } else {
-            console.log("[HomeView] Perfiles cliente recibidos:", { count: (profiles || []).length, ids: (profiles || []).map((p: { id: string })=>p.id) })
-            for (const prof of profiles || []) {
-              profilesById[prof.id] = { ...(profilesById[prof.id] || {}), ...prof }
-            }
-          }
-        } catch (e) {
-          console.error('Error leyendo perfiles en cliente:', e)
-        }
-      }
-      // Fetch media for posts
-      const postIds = (postsData || []).map(p => p.id)
-      let mediaByPostId: Record<string, { url: string; mime_type: string }[]> = {}
-      if (postIds.length > 0) {
-        const { data: mediaRows, error: mediaErr } = await supabase
-          .from("post_media")
-          .select("post_id, url, mime_type")
-          .in("post_id", postIds)
-        if (mediaErr) {
-          console.error("Error cargando media:", mediaErr.message)
-        } else {
-          mediaByPostId = (mediaRows || []).reduce((acc: Record<string, { url: string; mime_type: string }[]>, m: { post_id: string | number; url: string; mime_type: string }) => {
-            const key = String(m.post_id)
-            acc[key] = acc[key] || []
-            acc[key].push({ url: m.url, mime_type: m.mime_type })
-            return acc
-          }, {} as Record<string, { url: string; mime_type: string }[]>)
-        }
-      }
-
-      // Calcular conteos reales de likes y comentarios
-      const likesRows = postIds.length > 0 ? (await supabase
-        .from("post_likes")
-        .select("post_id")
-        .in("post_id", postIds)).data || [] : []
-      const commentsRows = postIds.length > 0 ? (await supabase
-        .from("post_comments")
-        .select("post_id")
-        .in("post_id", postIds)).data || [] : []
-      const likesCountByPost: Record<string, number> = {}
-      const commentsCountByPost: Record<string, number> = {}
-      for (const r of likesRows as { post_id: string | number }[]) {
-        const k = String(r.post_id)
-        likesCountByPost[k] = (likesCountByPost[k] || 0) + 1
-      }
-      for (const r of commentsRows as { post_id: string | number }[]) {
-        const k = String(r.post_id)
-        commentsCountByPost[k] = (commentsCountByPost[k] || 0) + 1
-      }
-
-      const mapped = (postsData || []).map(p => {
-        const prof = profilesById[p.author_id] || {}
-        const resolvedAuthor = prof.full_name || (prof.email ? String(prof.email).split("@")[0] : `unab-${String(p.author_id).slice(0,8)}`)
-        if (!prof.full_name && !prof.email) {
-          console.warn("[HomeView] Fallback alias en post", { post_id: p.id, author_id: p.author_id, alias: resolvedAuthor, profile: prof })
-        }
-        return {
-          id: String(p.id),
-          author: resolvedAuthor,
-          role: prof.career || "",
-          avatar: "",
-          timestamp: formatRelativeTime(p.created_at),
-          content: p.content,
-          likes: likesCountByPost[String(p.id)] ?? (p.likes_count || 0),
-          comments: commentsCountByPost[String(p.id)] ?? (p.comments_count || 0),
-          media: mediaByPostId[p.id] || [],
-        }
-      })
-      setPosts(mapped)
-      
-      // Cargar likes iniciales del usuario para estos posts
-      try {
-        const { data: authData } = await supabase.auth.getUser()
-        const userId = authData.user?.id
-        
-        if (userId && postIds.length > 0) {
-          const { data: likedRows } = await supabase
-            .from("post_likes")
-            .select("post_id")
-            .eq("user_id", userId)
-            .in("post_id", postIds)
-          
-          const likedSet = new Set<string>((likedRows || []).map((r: { post_id: string | number }) => String(r.post_id)))
-          setLikedPostIds(likedSet)
-        }
-      } catch (e) {
-        console.error("Error cargando likes iniciales:", e)
-      }
-      
-      setLoading(false)
+  const posts = [
+    {
+      id: 1,
+      author: "Gustavo Petro",
+      username: "petrogustavo",
+      verified: true,
+      time: "1h",
+      content: "Se suspende a partir de la fecha, pero al estar vigente, antes de esta fecha los decretos derivados gozan de presunción de legalidad",
+      avatar: "https://i.pravatar.cc/150?u=petrogustavo",
+      isQuote: true,
+      quotedPost: {
+        author: "Corte Constitucional",
+        username: "CConstitucional",
+        verified: true,
+        time: "2h",
+        content: "#LaCorteInforma | La Corte suspende provisionalmente el Decreto 1390 de 2025 “Por el cual se declara el Estado de Emergencia Económica y Social en todo el territorio nacional”, mientras se profiere una decisión de fondo.",
+        image: "https://images.unsplash.com/photo-1589829545856-d10d557cf95f?q=80&w=1000&auto=format&fit=crop"
+      },
+      stats: { comments: "1.2k", retweets: "3.4k", likes: "12k", views: "1.5M" }
     }
-
-    loadPosts()
-
-    const onPostCreated = () => loadPosts()
-    window.addEventListener("sirius:postCreated", onPostCreated as EventListener)
-
-    const channel = supabase
-      .channel("home-posts")
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "posts" },
-        () => loadPosts()
-      )
-      .subscribe()
-
-    return () => {
-      window.removeEventListener("sirius:postCreated", onPostCreated as EventListener)
-      try { supabase.removeChannel(channel) } catch {}
-    }
-  }, [])
-
-  const loadComments = async (postId: string) => {
-    // Obtener últimos 10 comentarios y sus autores
-    const { data: rows, error } = await supabase
-      .from("post_comments")
-      .select("id, content, created_at, author_id")
-      .eq("post_id", postId)
-      .order("created_at", { ascending: false })
-      .limit(10)
-    
-    if (error) {
-      console.error("Error cargando comentarios:", error.message)
-      return
-    }
-    console.log("[HomeView] Comentarios obtenidos:", { postId, count: (rows || []).length, sample: (rows || []).slice(0,3) })
-    
-    const authorIds = Array.from(new Set((rows || []).map(r => r.author_id)))
-    console.log("[HomeView] Author IDs (comments):", authorIds)
-    const profilesById: Record<string, { id: string; full_name?: string | null; email?: string | null }> = {}
-    
-    if (authorIds.length > 0) {
-      // 1) API server-side primero
-      try {
-        const res = await fetch('/api/user-profiles', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ids: authorIds })
-        })
-        if (res.ok) {
-          const { profiles } = await res.json()
-          console.log("[HomeView] API perfiles (comments) recibidos:", { count: (profiles || []).length, ids: (profiles || []).map((p: { id: string })=>p.id) })
-          for (const p of profiles || []) {
-            profilesById[p.id] = { ...(profilesById[p.id] || {}), ...p }
-          }
-        } else {
-          const txt = await res.text()
-          console.warn("[HomeView] API /api/user-profiles (comments) no OK", { status: res.status, body: txt })
-        }
-      } catch (e) {
-        console.error('Error enriqueciendo perfiles (comments) desde API:', e)
-      }
-
-      // 2) Merge con lectura cliente de public.users para completar datos
-      try {
-        const { data: profs } = await supabase
-          .from("users")
-          .select("id, full_name, email")
-          .in("id", authorIds)
-        console.log("[HomeView] Perfiles cliente (comments) recibidos:", { count: (profs || []).length, ids: (profs || []).map((p: { id: string })=>p.id) })
-        for (const p of profs || []) {
-          profilesById[p.id] = { ...(profilesById[p.id] || {}), ...p }
-        }
-      } catch (e) {
-        console.error('Error leyendo perfiles (comments) en cliente:', e)
-      }
-    }
-    
-    const mapped = (rows || []).map(r => {
-      const name = profilesById[r.author_id]?.full_name || (profilesById[r.author_id]?.email ? String(profilesById[r.author_id].email).split("@")[0] : `unab-${String(r.author_id).slice(0,8)}`)
-      if (!profilesById[r.author_id]?.full_name && !profilesById[r.author_id]?.email) {
-        console.warn("[HomeView] Fallback alias en comentario", { post_id: postId, comment_id: r.id, author_id: r.author_id, alias: name, profile: profilesById[r.author_id] })
-      }
-      return {
-        id: r.id,
-        author: name,
-        avatar: "",
-        timestamp: formatRelativeTime(r.created_at),
-        content: r.content,
-      }
-    })
-    
-    setCommentsByPostId(prev => ({ ...prev, [postId]: mapped }))
-  }
-
-  const onToggleComment = async (postId: string) => {
-    setOpenComments(prev => {
-      const next = new Set(prev)
-      if (next.has(postId)) next.delete(postId)
-      else next.add(postId)
-      return next
-    })
-
-    // Si se abre y no hay comentarios cargados, cargar
-    if (!openComments.has(postId) && !commentsByPostId[postId]) {
-      await loadComments(postId)
-    }
-  }
-
-  const openDetail = async (postId: string) => {
-    setSelectedPostId(postId)
-    setDetailOpen(true)
-    if (!commentsByPostId[postId]) {
-      await loadComments(postId)
-    }
-  }
-
-  const setCommentTextFor = (postId: string, v: string) => {
-    setCommentTexts(prev => ({ ...prev, [postId]: v }))
-  }
-
-  const onSubmitComment = async (postId: string, text: string) => {
-    const { data: authData } = await supabase.auth.getUser()
-    const userId = authData.user?.id
-    if (!userId) {
-      toast({ title: "Inicia sesión", description: "Necesitas iniciar sesión para comentar" })
-      return
-    }
-    const body = text.trim()
-    if (!body) return
-    
-    const { error } = await supabase.from("post_comments").insert({ post_id: postId, author_id: userId, content: body })
-    if (error) {
-      toast({ title: "Error", description: "No se pudo publicar tu comentario" })
-      return
-    }
-    
-    // Limpiar input y aumentar contador
-    setCommentTexts(prev => ({ ...prev, [postId]: "" }))
-    setPosts(prev => prev.map(p => p.id === postId ? { ...p, comments: (p.comments || 0) + 1 } : p))
-    
-    // Añadir el comentario al hilo visible inmediatamente
-    try {
-      const { data: me } = await supabase.from("users").select("full_name, email").eq("id", userId).single()
-      const authorName = me?.full_name || (me?.email ? String(me.email).split("@")[0] : "Tú")
-      
-      const newComment = { 
-        id: Date.now(), // ID temporal hasta recargar
-        author: authorName,
-        avatar: "",
-        timestamp: "ahora",
-        content: body
-      }
-      
-      setCommentsByPostId(prev => ({
-        ...prev,
-        [postId]: [newComment, ...(prev[postId] || [])]
-      }))
-    } catch (e) {
-      console.error("Error obteniendo datos del autor:", e)
-    }
-    
-    toast({ title: "Comentario publicado" })
-  }
-
-  const onToggleLike = async (postId: string) => {
-    const { data: authData } = await supabase.auth.getUser()
-    const userId = authData.user?.id
-    if (!userId) {
-      toast({ title: "Inicia sesión", description: "Necesitas iniciar sesión para dar me gusta" })
-      return
-    }
-    
-    // Verificar estado real en servidor para evitar 409 (Conflict)
-    const { count, error: checkErr } = await supabase
-      .from("post_likes")
-      .select("post_id", { count: "exact", head: true })
-      .eq("post_id", postId)
-      .eq("user_id", userId)
-    
-    if (checkErr) {
-      toast({ title: "Error", description: "No se pudo verificar el me gusta" })
-      return
-    }
-    
-    const likedOnServer = (count || 0) > 0
-    
-    if (likedOnServer) {
-      // Ya tiene like en el servidor, eliminar
-      const { error } = await supabase
-        .from("post_likes")
-        .delete()
-        .eq("post_id", postId)
-        .eq("user_id", userId)
-      
-      if (error) {
-        toast({ title: "Error", description: "No se pudo quitar el me gusta" })
-        return
-      }
-      
-      setLikedPostIds(prev => {
-        const next = new Set(prev)
-        next.delete(postId)
-        return next
-      })
-      
-      setPosts(prev => prev.map(p => p.id === postId ? { ...p, likes: Math.max((p.likes || 1) - 1, 0) } : p))
-    } else {
-      // No tiene like en el servidor, insertar
-      const { error } = await supabase
-        .from("post_likes")
-        .insert({ post_id: postId, user_id: userId })
-      
-      if (error) {
-        // Si hay conflicto (409), tratamos como ya-likeado
-        const code = (error as { code?: string } | null)?.code
-        if (code === "409") {
-          setLikedPostIds(prev => {
-            const next = new Set(prev)
-            next.add(postId)
-            return next
-          })
-          return
-        }
-        
-        toast({ title: "Error", description: "No se pudo dar me gusta" })
-        return
-      }
-      
-      setLikedPostIds(prev => {
-        const next = new Set(prev)
-        next.add(postId)
-        return next
-      })
-      
-      setPosts(prev => prev.map(p => p.id === postId ? { ...p, likes: (p.likes || 0) + 1 } : p))
-    }
-  }
-
-  const onShare = async (postId: string) => {
-    const url = `${window.location.origin}/?post=${postId}`
-    try {
-      if (navigator.share) {
-        await navigator.share({ url, text: "Mira esta publicación de SIRIUS" })
-        toast({ title: "Compartido", description: "Has compartido la publicación" })
-      } else {
-        await navigator.clipboard.writeText(url)
-        toast({ title: "Enlace copiado", description: "URL copiada al portapapeles" })
-      }
-    } catch {
-      toast({ title: "No se pudo compartir", description: "Intenta nuevamente" })
-    }
-  }
+  ];
 
   return (
-    <div className="mx-auto max-w-3xl min-h-screen">
-      <div className="container">
-        <main className="lg:border-x lg:border-border min-h-screen">
-          {/* Tabs estilo X.com */}
-          <div className="border-b border-border">
-            <Tabs defaultValue="para-ti" className="w-full">
-              <TabsList className="w-full justify-start rounded-none border-b h-auto p-0">
-                <TabsTrigger value="para-ti" className="flex-1 py-3">Para ti</TabsTrigger>
-                <TabsTrigger value="siguiendo" className="flex-1 py-3">Siguiendo</TabsTrigger>
-              </TabsList>
-              <TabsContent value="para-ti" className="p-0">
-                <StoriesStrip />
-              </TabsContent>
-              <TabsContent value="siguiendo" className="p-4 text-sm text-muted-foreground">
-                Próximamente.
-              </TabsContent>
-            </Tabs>
-          </div>
-
-          {/* Composer */}
-          <Composer />
-
-          {/* Posts Feed */}
-          {loading ? (
-            <div className="divide-y divide-border">
-              {[...Array(3)].map((_, i) => (
-                <div key={i} className="py-3">
-                  <div className="flex gap-3">
-                    <Skeleton className="h-10 w-10 rounded-full" />
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <Skeleton className="h-4 w-32" />
-                        <Skeleton className="h-3 w-16" />
-                      </div>
-                      <Skeleton className="mt-2 h-4 w-3/4 max-w-[480px]" />
-                      <Skeleton className="mt-2 h-4 w-2/3 max-w-[420px]" />
-                      <div className="mt-3 inline-block max-w-[340px] md:max-w-[400px]">
-                        <Skeleton className="w-full aspect-[4/5] md:aspect-square rounded-2xl" />
-                      </div>
-                      <div className="mt-3 flex gap-4">
-                        <Skeleton className="h-6 w-16 rounded-full" />
-                        <Skeleton className="h-6 w-16 rounded-full" />
-                        <Skeleton className="h-6 w-16 rounded-full" />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              ))}
+    <div className="w-full">
+      {/* Pestañas Superiores */}
+      <div className="sticky top-0 z-10 backdrop-blur-md bg-white/80 dark:bg-black/80 border-b border-gray-200 dark:border-gray-800">
+        <div className="flex w-full">
+          <Button
+            variant="light"
+            radius="none"
+            onPress={() => setActiveTab("para-ti")}
+            className="flex-1 flex justify-center hover:bg-gray-100 dark:hover:bg-white/5 transition-colors h-14"
+          >
+            <div className="relative py-4 h-full flex items-center">
+              <span className={`text-sm font-bold ${activeTab === "para-ti" ? "text-black dark:text-white" : "text-gray-500"}`}>
+                Para ti
+              </span>
+              {activeTab === "para-ti" && (
+                <div className={`absolute bottom-0 left-0 right-0 h-1 rounded-full ${accentBg.split(' ')[0]}`} />
+              )}
             </div>
-          ) : posts.length === 0 ? (
-            <div className="p-4 text-center text-muted-foreground">No hay publicaciones aún. ¡Sé el primero!</div>
-          ) : (
-            <div className="divide-y divide-border">
-              {posts.map((post) => (
-                <div key={post.id} className="py-3">
-                  <PostCard
-                    {...post}
-                    likedByMe={likedPostIds.has(String(post.id))}
-                    onToggleLike={onToggleLike}
-                    onShare={onShare}
-                    onToggleComment={onToggleComment}
-                    onSubmitComment={onSubmitComment}
-                    commentOpen={openComments.has(String(post.id))}
-                    commentText={commentTexts[String(post.id)] || ""}
-                    setCommentText={(v) => setCommentTextFor(String(post.id), v)}
-                    commentsList={commentsByPostId[String(post.id)] || []}
-                    onOpenDetail={openDetail}
-                  />
-                </div>
-              ))}
+          </Button>
+          <Button
+            variant="light"
+            radius="none"
+            onPress={() => setActiveTab("siguiendo")}
+            className="flex-1 flex justify-center hover:bg-gray-100 dark:hover:bg-white/5 transition-colors h-14"
+          >
+            <div className="relative py-4 h-full flex items-center">
+              <span className={`text-sm font-bold ${activeTab === "siguiendo" ? "text-black dark:text-white" : "text-gray-500"}`}>
+                Siguiendo
+              </span>
+              {activeTab === "siguiendo" && (
+                <div className={`absolute bottom-0 left-0 right-0 h-1 rounded-full ${accentBg.split(' ')[0]}`} />
+              )}
             </div>
-          )}
-        </main>
+          </Button>
+        </div>
       </div>
 
-      {selectedPostId && (
-        <PostDetailModal
-          open={detailOpen}
-          onOpenChange={setDetailOpen}
-          post={posts.find(p => String(p.id) === String(selectedPostId))}
-          commentsList={commentsByPostId[String(selectedPostId)] || []}
-          commentText={commentTexts[String(selectedPostId)] || ""}
-          setCommentText={(v) => setCommentTextFor(String(selectedPostId), v)}
-          onSubmitComment={(pid, txt) => onSubmitComment(pid, txt)}
-          onToggleLike={(pid) => onToggleLike(pid)}
-        />
-      )}
+      {/* Área de Composición de Post */}
+      <div className="p-4 border-b border-gray-200 dark:border-gray-800 flex gap-3">
+        <div className="shrink-0">
+          <Avatar src="https://i.pravatar.cc/150?u=jpalomino502" className="w-10 h-10" />
+        </div>
+        <div className="flex-1">
+          <Textarea
+            placeholder="¿Qué está pasando?"
+            classNames={{
+              input: "bg-transparent text-xl outline-none resize-none placeholder-gray-500 min-h-[50px] data-[hover=true]:bg-transparent group-data-[focus=true]:bg-transparent",
+              inputWrapper: "bg-transparent shadow-none"
+            }}
+            variant="flat"
+            minRows={2}
+          />
 
-      {/* Floating Action Button */}
-      <Button
-        size="icon"
-        className="fixed bottom-20 md:bottom-6 right-6 h-14 w-14 rounded-full bg-[#ff9800] hover:bg-[#fb8c00] shadow-xl hover:shadow-2xl transition-all hover:scale-110"
-        onClick={() => window.dispatchEvent(new CustomEvent('sirius:openPostModal'))}
-      >
-        <Sparkles className="h-5 w-5" />
-        <span className="sr-only">New post</span>
-      </Button>
+          <div className={`flex items-center gap-1 py-3 border-b border-gray-100 dark:border-gray-900 mb-3 ${accentColor}`}>
+            <Globe2 className="w-4 h-4" />
+            <span className="text-xs font-bold">Cualquier persona puede responder</span>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1">
+              <Button isIconOnly variant="light" radius="full" className={accentColor}>
+                <ImageIcon className="w-5 h-5" />
+              </Button>
+              <Button isIconOnly variant="light" radius="full" className={accentColor}>
+                <FileText className="w-5 h-5" />
+              </Button>
+              <Button isIconOnly variant="light" radius="full" className={accentColor}>
+                <Smile className="w-5 h-5" />
+              </Button>
+              <Button isIconOnly variant="light" radius="full" className={accentColor}>
+                <Calendar className="w-5 h-5" />
+              </Button>
+              <Button isIconOnly variant="light" radius="full" className={`${accentColor} opacity-50`}>
+                <MapPin className="w-5 h-5" />
+              </Button>
+            </div>
+            <Button
+              className={`${accentBg} font-bold text-sm`}
+              radius="full"
+              size="sm"
+            >
+              Postear
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Lista de Posts */}
+      <div className="divide-y divide-gray-200 dark:divide-gray-800">
+        {posts.map((post) => (
+          <article
+            key={post.id}
+            className="p-4 hover:bg-gray-50 dark:hover:bg-white/5 transition-colors cursor-pointer"
+          >
+            <div className="flex gap-3">
+              <div className="shrink-0">
+                <Avatar src={post.avatar} className="w-10 h-10" />
+              </div>
+              <div className="flex-1">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1 flex-wrap">
+                    <span className="font-bold text-sm hover:underline">{post.author}</span>
+                    {post.verified && (
+                      <svg viewBox="0 0 24 24" className={`w-4 h-4 fill-current ${accentColor}`}>
+                        <path d="M22.5 12.5c0-1.58-.88-2.95-2.18-3.66.15-.44.23-.91.23-1.4 0-2.38-1.93-4.32-4.32-4.32-.48 0-.95.08-1.39.23C14.13 2.07 12.76 1.2 11.2 1.2s-2.93.87-3.64 2.15c-.44-.15-.91-.23-1.4-.23-2.38 0-4.32 1.93-4.32 4.32 0 .48.08.95.23 1.39C.87 9.57 0 10.94 0 12.5s.87 2.93 2.15 3.64c-.15.44-.23.91-.23 1.4 0 2.38 1.93 4.32 4.32 4.32.48 0 .95-.08 1.39-.23 1.12 1.83 3.12 3.06 5.37 3.06s4.25-1.23 5.37-3.06c.44.15.91.23 1.39.23 2.38 0 4.32-1.93 4.32-4.32 0-.48-.08-.95-.23-1.39 1.28-.71 2.16-2.08 2.16-3.66zm-12.91 4.29l-4.14-4.14 1.41-1.41 2.73 2.73 6.36-6.36 1.41 1.41-7.77 7.77z" />
+                      </svg>
+                    )}
+                    <span className="text-gray-500 text-sm">@{post.username} · {post.time}</span>
+                  </div>
+                  <Button isIconOnly variant="light" size="sm" radius="full" className="text-gray-500 hover:text-[#1d9bf0]">
+                    <MoreHorizontal className="w-4 h-4" />
+                  </Button>
+                </div>
+
+                <p className="text-sm mt-0.5 leading-normal">{post.content}</p>
+
+                {/* Quoted Post (Como en la imagen 2) */}
+                {post.isQuote && (
+                  <Card className="mt-3 border border-gray-200 dark:border-gray-800 bg-transparent shadow-none hover:bg-gray-50 dark:hover:bg-white/5 transition-colors">
+                    <CardBody className="p-3 flex flex-col gap-2 overflow-visible">
+                      <div className="flex items-center gap-2">
+                        <Avatar src="https://i.pravatar.cc/150?u=cconstitucional" className="w-5 h-5" />
+                        <span className="font-bold text-xs">{post.quotedPost.author}</span>
+                        {post.quotedPost.verified && <svg viewBox="0 0 24 24" className={`w-3 h-3 fill-current ${accentColor}`}><path d="M22.5 12.5c0-1.58-.88-2.95-2.18-3.66.15-.44.23-.91.23-1.4 0-2.38-1.93-4.32-4.32-4.32-.48 0-.95.08-1.39.23C14.13 2.07 12.76 1.2 11.2 1.2s-2.93.87-3.64 2.15c-.44-.15-.91-.23-1.4-.23-2.38 0-4.32 1.93-4.32 4.32 0 .48.08.95.23 1.39C.87 9.57 0 10.94 0 12.5s.87 2.93 2.15 3.64c-.15.44-.23.91-.23 1.4 0 2.38 1.93 4.32 4.32 4.32.48 0 .95-.08 1.39-.23 1.12 1.83 3.12 3.06 5.37 3.06s4.25-1.23 5.37-3.06c.44.15.91.23 1.39.23 2.38 0 4.32-1.93 4.32-4.32 0-.48-.08-.95-.23-1.39 1.28-.71 2.16-2.08 2.16-3.66zm-12.91 4.29l-4.14-4.14 1.41-1.41 2.73 2.73 6.36-6.36 1.41 1.41-7.77 7.77z" /></svg>}
+                        <span className="text-gray-500 text-xs">@{post.quotedPost.username} · {post.quotedPost.time}</span>
+                      </div>
+                      <p className="text-xs">{post.quotedPost.content}</p>
+                      {post.quotedPost.image && (
+                        <div className="mt-1 border border-gray-200 dark:border-gray-800 rounded-xl overflow-hidden">
+                          <Image
+                            src={post.quotedPost.image}
+                            alt="Post image"
+                            className="w-full h-auto object-cover"
+                            radius="lg"
+                            removeWrapper
+                          />
+                        </div>
+                      )}
+                    </CardBody>
+                  </Card>
+                )}
+
+                {/* Acciones del Post */}
+                <div className="flex items-center justify-between mt-3 text-gray-500 max-w-md">
+                  <div className="flex items-center gap-1 group">
+                    <Button isIconOnly variant="light" size="sm" radius="full" className={`text-gray-500 group-hover:${accentColor.split(' ')[0]} group-hover:bg-blue-500/10`}>
+                      <MessageCircle className="w-4 h-4" />
+                    </Button>
+                    <span className={`text-xs group-hover:${accentColor.split(' ')[0]}`}>{post.stats.comments}</span>
+                  </div>
+                  <div className="flex items-center gap-1 group">
+                    <Button isIconOnly variant="light" size="sm" radius="full" className="text-gray-500 group-hover:text-green-500 group-hover:bg-green-500/10">
+                      <Repeat2 className="w-4 h-4" />
+                    </Button>
+                    <span className="text-xs group-hover:text-green-500">{post.stats.retweets}</span>
+                  </div>
+                  <div className="flex items-center gap-1 group">
+                    <Button isIconOnly variant="light" size="sm" radius="full" className="text-gray-500 group-hover:text-pink-500 group-hover:bg-pink-500/10">
+                      <Heart className="w-4 h-4" />
+                    </Button>
+                    <span className="text-xs group-hover:text-pink-500">{post.stats.likes}</span>
+                  </div>
+                  <div className="flex items-center gap-1 group">
+                    <Button isIconOnly variant="light" size="sm" radius="full" className={`text-gray-500 group-hover:${accentColor.split(' ')[0]} group-hover:bg-blue-500/10`}>
+                      <BarChart3 className="w-4 h-4" />
+                    </Button>
+                    <span className={`text-xs group-hover:${accentColor.split(' ')[0]}`}>{post.stats.views}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button isIconOnly variant="light" size="sm" radius="full" className={`text-gray-500 hover:${accentColor.split(' ')[0]} hover:bg-blue-500/10`}>
+                      <Share className="w-4 h-4" />
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </article>
+        ))}
+      </div>
     </div>
-  )
+  );
 }
